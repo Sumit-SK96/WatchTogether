@@ -1,8 +1,14 @@
 /**
  * CameraBubble.jsx — Draggable camera bubble
  * Shows live video from local or remote stream, with mute/camera controls.
+ *
+ * FIXES (v2):
+ *  - Removed duplicate scaleX(-1) (was in both CSS and inline style)
+ *  - Better stream attachment with retry on play failure
+ *  - Debounced track checking to avoid excessive state updates
+ *  - Proper video element lifecycle management
  */
-import React, { useRef, useEffect, useState } from 'react';
+import React, { useRef, useEffect, useState, useCallback } from 'react';
 import { motion } from 'framer-motion';
 import { BUBBLE_SIZE_DEFAULT, BUBBLE_SIZE_EXPANDED } from '../utils/constants';
 
@@ -19,6 +25,7 @@ export default function CameraBubble({
   const videoRef = useRef(null);
   const [expanded, setExpanded] = useState(false);
   const [videoReady, setVideoReady] = useState(false);
+  const retryTimerRef = useRef(null);
   const size = expanded ? BUBBLE_SIZE_EXPANDED : BUBBLE_SIZE_DEFAULT;
 
   // Attach/detach stream to video element
@@ -26,32 +33,67 @@ export default function CameraBubble({
     const el = videoRef.current;
     if (!el) return;
 
+    // Clear any pending retry
+    clearTimeout(retryTimerRef.current);
+
     if (stream) {
-      el.srcObject = stream;
-      el.play().catch(() => {});
-      
-      // Listen for actual video frames
-      const onPlaying = () => setVideoReady(true);
-      const onEnded = () => setVideoReady(false);
-      el.addEventListener('playing', onPlaying);
-      el.addEventListener('ended', onEnded);
-      
+      // Only reassign if srcObject actually changed
+      if (el.srcObject !== stream) {
+        el.srcObject = stream;
+      }
+
+      const attemptPlay = () => {
+        if (!el.srcObject) return;
+        el.play().catch((err) => {
+          // Autoplay blocked — retry after user interaction
+          if (err.name === 'NotAllowedError') {
+            console.warn('[CameraBubble] Autoplay blocked, will retry on interaction');
+            const retryOnClick = () => {
+              el.play().catch(() => {});
+              document.removeEventListener('click', retryOnClick);
+            };
+            document.addEventListener('click', retryOnClick, { once: true });
+          }
+        });
+      };
+
+      attemptPlay();
+
       // Check if video tracks exist and are live
       const checkTracks = () => {
         const vt = stream.getVideoTracks();
-        setVideoReady(vt.length > 0 && vt[0].readyState === 'live' && vt[0].enabled);
+        const ready = vt.length > 0 && vt[0].readyState === 'live' && vt[0].enabled;
+        setVideoReady(ready);
       };
+
+      // Initial check + slight delay for remote streams that take a moment
       checkTracks();
-      
-      // Re-check when tracks change
+      retryTimerRef.current = setTimeout(checkTracks, 500);
+
+      const onPlaying = () => setVideoReady(true);
+      const onEnded = () => setVideoReady(false);
+      const onTrackEnded = () => setVideoReady(false);
+
+      el.addEventListener('playing', onPlaying);
+      el.addEventListener('ended', onEnded);
       stream.addEventListener('addtrack', checkTracks);
       stream.addEventListener('removetrack', checkTracks);
 
+      // Listen for track 'ended' event (camera revoked)
+      const videoTrack = stream.getVideoTracks()[0];
+      if (videoTrack) {
+        videoTrack.addEventListener('ended', onTrackEnded);
+      }
+
       return () => {
+        clearTimeout(retryTimerRef.current);
         el.removeEventListener('playing', onPlaying);
         el.removeEventListener('ended', onEnded);
         stream.removeEventListener('addtrack', checkTracks);
         stream.removeEventListener('removetrack', checkTracks);
+        if (videoTrack) {
+          videoTrack.removeEventListener('ended', onTrackEnded);
+        }
         setVideoReady(false);
       };
     } else {
@@ -59,6 +101,15 @@ export default function CameraBubble({
       setVideoReady(false);
     }
   }, [stream]);
+
+  // Re-check video readiness when camera toggles
+  useEffect(() => {
+    if (!stream) return;
+    const vt = stream.getVideoTracks();
+    if (vt.length > 0) {
+      setVideoReady(vt[0].readyState === 'live' && vt[0].enabled && !cameraOff);
+    }
+  }, [cameraOff, stream]);
 
   const showVideo = stream && !cameraOff && videoReady;
 

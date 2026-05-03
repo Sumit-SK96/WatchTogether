@@ -1,50 +1,108 @@
 /**
  * useAudioDetection.js — Detect when a user is speaking
  * Uses Web Audio API AnalyserNode to monitor audio levels.
+ *
+ * FIXES (v2):
+ *  - Throttled detection loop (every 100ms instead of every frame) to reduce CPU
+ *  - Proper cleanup of AudioContext
+ *  - Guards against suspended AudioContext (autoplay policy)
+ *  - Only runs when mic track is enabled
  */
 import { useEffect, useRef, useState } from 'react';
 
+const SPEAKING_THRESHOLD = 15;
+const SILENCE_TIMEOUT = 500;
+const DETECTION_INTERVAL = 100; // ms between checks (instead of rAF)
+
 export function useAudioDetection(stream) {
   const [isSpeaking, setIsSpeaking] = useState(false);
-  const analyserRef = useRef(null);
-  const animFrameRef = useRef(null);
+  const cleanupRef = useRef(null);
 
   useEffect(() => {
-    if (!stream) return;
+    if (!stream) {
+      setIsSpeaking(false);
+      return;
+    }
 
     const audioTrack = stream.getAudioTracks()[0];
-    if (!audioTrack) return;
+    if (!audioTrack || !audioTrack.enabled) {
+      setIsSpeaking(false);
+      return;
+    }
 
-    const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-    const source = audioCtx.createMediaStreamSource(stream);
-    const analyser = audioCtx.createAnalyser();
-    analyser.fftSize = 512;
-    analyser.smoothingTimeConstant = 0.4;
-    source.connect(analyser);
-    analyserRef.current = analyser;
-
-    const dataArray = new Uint8Array(analyser.frequencyBinCount);
+    let cancelled = false;
+    let audioCtx = null;
+    let intervalId = null;
     let speakingTimeout = null;
 
-    const detect = () => {
-      analyser.getByteFrequencyData(dataArray);
-      const avg = dataArray.reduce((a, b) => a + b, 0) / dataArray.length;
+    const setup = async () => {
+      try {
+        audioCtx = new (window.AudioContext || window.webkitAudioContext)();
 
-      if (avg > 15) {
-        setIsSpeaking(true);
-        clearTimeout(speakingTimeout);
-        speakingTimeout = setTimeout(() => setIsSpeaking(false), 500);
+        // Resume context if suspended (browser autoplay policy)
+        if (audioCtx.state === 'suspended') {
+          await audioCtx.resume();
+        }
+
+        if (cancelled) {
+          audioCtx.close();
+          return;
+        }
+
+        const source = audioCtx.createMediaStreamSource(stream);
+        const analyser = audioCtx.createAnalyser();
+        analyser.fftSize = 256; // Smaller FFT for better perf
+        analyser.smoothingTimeConstant = 0.3;
+        source.connect(analyser);
+
+        const dataArray = new Uint8Array(analyser.frequencyBinCount);
+
+        // Use setInterval instead of rAF — less CPU, still responsive
+        intervalId = setInterval(() => {
+          if (cancelled || audioCtx.state === 'closed') {
+            clearInterval(intervalId);
+            return;
+          }
+
+          // Don't process if track was disabled (muted)
+          if (!audioTrack.enabled || audioTrack.readyState === 'ended') {
+            setIsSpeaking(false);
+            return;
+          }
+
+          analyser.getByteFrequencyData(dataArray);
+
+          // Only check first 32 bins (voice frequencies: ~85Hz-4kHz)
+          let sum = 0;
+          const voiceBins = Math.min(32, dataArray.length);
+          for (let i = 0; i < voiceBins; i++) {
+            sum += dataArray[i];
+          }
+          const avg = sum / voiceBins;
+
+          if (avg > SPEAKING_THRESHOLD) {
+            setIsSpeaking(true);
+            clearTimeout(speakingTimeout);
+            speakingTimeout = setTimeout(() => {
+              if (!cancelled) setIsSpeaking(false);
+            }, SILENCE_TIMEOUT);
+          }
+        }, DETECTION_INTERVAL);
+      } catch (err) {
+        console.warn('[AudioDetection] Setup error:', err.message);
       }
-
-      animFrameRef.current = requestAnimationFrame(detect);
     };
 
-    detect();
+    setup();
 
     return () => {
-      cancelAnimationFrame(animFrameRef.current);
+      cancelled = true;
+      clearInterval(intervalId);
       clearTimeout(speakingTimeout);
-      audioCtx.close();
+      if (audioCtx && audioCtx.state !== 'closed') {
+        audioCtx.close().catch(() => {});
+      }
+      setIsSpeaking(false);
     };
   }, [stream]);
 

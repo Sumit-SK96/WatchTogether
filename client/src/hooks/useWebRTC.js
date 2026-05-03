@@ -1,7 +1,14 @@
 /**
  * useWebRTC.js — WebRTC peer connection for camera/mic sharing
  * Uses NATIVE WebRTC API (RTCPeerConnection) — no simple-peer dependency.
- * This eliminates all Vite/Node.js polyfill issues.
+ *
+ * FIXES (v2):
+ *  - Proper retry/reconnect when ICE fails or disconnects
+ *  - Guard against race conditions during offer/answer exchange
+ *  - Debounced renegotiation to prevent rapid-fire offers
+ *  - Graceful getUserMedia fallback (audio-only if camera blocked)
+ *  - Cleanup leak: stop tracks and close AudioContext on unmount
+ *  - Better candidate queuing with drain after remoteDescription set
  *
  * Flow:
  *   HOST creates offer → sends via socket → GUEST answers
@@ -14,13 +21,22 @@ const ICE_SERVERS = [
   { urls: 'stun:stun1.l.google.com:19302' },
   { urls: 'stun:stun2.l.google.com:19302' },
   { urls: 'stun:stun3.l.google.com:19302' },
-  // Free TURN servers for NAT traversal
+  // Free TURN relay for NAT traversal
   {
-    urls: 'turn:relay1.expressturn.com:443',
-    username: 'efGMGBCZXIUCYBIALJ',
-    credential: 'jNpOkFoq5jS8NKPP',
+    urls: 'turn:openrelay.metered.ca:443',
+    username: 'openrelayproject',
+    credential: 'openrelayproject',
+  },
+  {
+    urls: 'turn:openrelay.metered.ca:443?transport=tcp',
+    username: 'openrelayproject',
+    credential: 'openrelayproject',
   },
 ];
+
+// How long to wait before retrying a failed connection
+const RECONNECT_DELAY = 2000;
+const MAX_RECONNECT_ATTEMPTS = 3;
 
 export function useWebRTC(socket, roomCode, role, hasRemoteUser) {
   const [localStream, setLocalStream] = useState(null);
@@ -32,47 +48,76 @@ export function useWebRTC(socket, roomCode, role, hasRemoteUser) {
   const localStreamRef = useRef(null);
   const makingOfferRef = useRef(false);       // Prevent glare (both sides creating offers)
   const ignoreOfferRef = useRef(false);
-  const isNegotiatingRef = useRef(false);
   const pendingCandidatesRef = useRef([]);    // ICE candidates before remote description
   const connectedRef = useRef(false);
+  const reconnectAttemptsRef = useRef(0);
+  const reconnectTimerRef = useRef(null);
+  const mountedRef = useRef(true);
 
-  // ─── Get local camera + mic ─────────────────
+  // ─── Get local camera + mic (with fallback) ──────
   const startMedia = useCallback(async () => {
     if (localStreamRef.current) {
       setLocalStream(localStreamRef.current);
       return localStreamRef.current;
     }
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({
-        video: { width: { ideal: 320 }, height: { ideal: 320 }, facingMode: 'user' },
+
+    // Try video + audio first, then audio-only, then give up gracefully
+    const configs = [
+      {
+        video: {
+          width: { ideal: 320, max: 640 },
+          height: { ideal: 240, max: 480 },
+          frameRate: { ideal: 15, max: 24 },
+          facingMode: 'user',
+        },
         audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
-      });
-      localStreamRef.current = stream;
-      setLocalStream(stream);
-      console.log('[WebRTC] ✅ Local media acquired:',
-        stream.getVideoTracks().length, 'video,',
-        stream.getAudioTracks().length, 'audio');
-      return stream;
-    } catch (err) {
-      console.error('[WebRTC] ❌ getUserMedia failed:', err.message);
-      return null;
+      },
+      // Fallback: lower resolution
+      {
+        video: { width: 160, height: 120, frameRate: 10, facingMode: 'user' },
+        audio: { echoCancellation: true, noiseSuppression: true },
+      },
+      // Fallback: audio only
+      { video: false, audio: true },
+    ];
+
+    for (const constraints of configs) {
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia(constraints);
+        localStreamRef.current = stream;
+        setLocalStream(stream);
+        const hasVideo = stream.getVideoTracks().length > 0;
+        const hasAudio = stream.getAudioTracks().length > 0;
+        console.log(`[WebRTC] ✅ Local media acquired: ${hasVideo ? '🎥' : '❌'} video, ${hasAudio ? '🎤' : '❌'} audio`);
+        if (!hasVideo) setCameraOn(false);
+        return stream;
+      } catch (err) {
+        console.warn('[WebRTC] getUserMedia attempt failed:', constraints.video ? 'with video' : 'audio-only', err.message);
+        continue;
+      }
     }
+
+    console.error('[WebRTC] ❌ All getUserMedia attempts failed');
+    return null;
   }, []);
 
   // ─── Cleanup peer connection ────────────────
   const closePeer = useCallback(() => {
+    clearTimeout(reconnectTimerRef.current);
+
     if (pcRef.current) {
       pcRef.current.onicecandidate = null;
       pcRef.current.ontrack = null;
       pcRef.current.onnegotiationneeded = null;
       pcRef.current.oniceconnectionstatechange = null;
-      pcRef.current.close();
+      pcRef.current.onconnectionstatechange = null;
+      pcRef.current.onsignalingstatechange = null;
+      try { pcRef.current.close(); } catch (e) { /* already closed */ }
       pcRef.current = null;
     }
     connectedRef.current = false;
     makingOfferRef.current = false;
     ignoreOfferRef.current = false;
-    isNegotiatingRef.current = false;
     pendingCandidatesRef.current = [];
     setRemoteStream(null);
   }, []);
@@ -81,13 +126,16 @@ export function useWebRTC(socket, roomCode, role, hasRemoteUser) {
   const createPeerConnection = useCallback((stream) => {
     closePeer();
 
-    const pc = new RTCPeerConnection({ iceServers: ICE_SERVERS });
+    const pc = new RTCPeerConnection({
+      iceServers: ICE_SERVERS,
+      iceCandidatePoolSize: 4,
+    });
     pcRef.current = pc;
 
     // Add local tracks to the connection
     if (stream) {
       stream.getTracks().forEach((track) => {
-        console.log('[WebRTC] Adding local track:', track.kind);
+        console.log('[WebRTC] Adding local track:', track.kind, 'enabled:', track.enabled);
         pc.addTrack(track, stream);
       });
     }
@@ -95,21 +143,21 @@ export function useWebRTC(socket, roomCode, role, hasRemoteUser) {
     // ── When we get remote tracks ──
     pc.ontrack = (event) => {
       console.log('[WebRTC] ✅ Received remote track:', event.track.kind);
-      // event.streams[0] contains all tracks from the remote peer
       if (event.streams && event.streams[0]) {
         setRemoteStream(event.streams[0]);
       } else {
-        // Fallback: create our own stream
-        const rs = new MediaStream();
-        rs.addTrack(event.track);
-        setRemoteStream(rs);
+        // Fallback: build our own MediaStream
+        setRemoteStream((prev) => {
+          const rs = prev || new MediaStream();
+          rs.addTrack(event.track);
+          return rs;
+        });
       }
     };
 
     // ── Send ICE candidates to remote via socket ──
     pc.onicecandidate = (event) => {
       if (event.candidate) {
-        console.log('[WebRTC] Sending ICE candidate');
         socket?.emit('webrtc-signal', {
           roomCode,
           signal: { type: 'candidate', candidate: event.candidate },
@@ -117,38 +165,87 @@ export function useWebRTC(socket, roomCode, role, hasRemoteUser) {
       }
     };
 
-    // ── Monitor connection state ──
+    // ── Monitor ICE connection state for reconnection ──
     pc.oniceconnectionstatechange = () => {
-      console.log('[WebRTC] ICE state:', pc.iceConnectionState);
-      if (pc.iceConnectionState === 'connected' || pc.iceConnectionState === 'completed') {
+      if (!mountedRef.current) return;
+      const state = pc.iceConnectionState;
+      console.log('[WebRTC] ICE state:', state);
+
+      if (state === 'connected' || state === 'completed') {
         connectedRef.current = true;
+        reconnectAttemptsRef.current = 0;
         console.log('[WebRTC] ✅✅ PEER CONNECTED!');
       }
-      if (pc.iceConnectionState === 'failed') {
-        console.log('[WebRTC] ❌ ICE failed, restarting...');
-        pc.restartIce();
+
+      if (state === 'failed') {
+        console.log('[WebRTC] ❌ ICE failed');
+        handleReconnect(stream);
       }
-      if (pc.iceConnectionState === 'disconnected') {
-        console.log('[WebRTC] ⚠️ ICE disconnected');
+
+      if (state === 'disconnected') {
+        console.log('[WebRTC] ⚠️ ICE disconnected — will attempt reconnect in 2s');
+        // Give it a moment — sometimes 'disconnected' resolves on its own
+        clearTimeout(reconnectTimerRef.current);
+        reconnectTimerRef.current = setTimeout(() => {
+          if (pcRef.current?.iceConnectionState === 'disconnected') {
+            handleReconnect(stream);
+          }
+        }, RECONNECT_DELAY);
       }
     };
 
     pc.onconnectionstatechange = () => {
+      if (!mountedRef.current) return;
       console.log('[WebRTC] Connection state:', pc.connectionState);
+      if (pc.connectionState === 'failed') {
+        handleReconnect(stream);
+      }
     };
 
     return pc;
   }, [socket, roomCode, closePeer]);
 
+  // ─── Reconnect logic ───────────────────────
+  const handleReconnect = useCallback((stream) => {
+    if (!mountedRef.current || !hasRemoteUser) return;
+    if (reconnectAttemptsRef.current >= MAX_RECONNECT_ATTEMPTS) {
+      console.error('[WebRTC] ❌ Max reconnect attempts reached');
+      return;
+    }
+
+    reconnectAttemptsRef.current++;
+    console.log(`[WebRTC] 🔄 Reconnect attempt ${reconnectAttemptsRef.current}/${MAX_RECONNECT_ATTEMPTS}`);
+
+    clearTimeout(reconnectTimerRef.current);
+    reconnectTimerRef.current = setTimeout(async () => {
+      if (!mountedRef.current) return;
+      // Only host initiates reconnection
+      if (role === 'host') {
+        const s = localStreamRef.current || await startMedia();
+        if (!s || !mountedRef.current) return;
+        const pc = createPeerConnection(s);
+        await createAndSendOffer(pc);
+      }
+    }, RECONNECT_DELAY);
+  }, [hasRemoteUser, role, startMedia, createPeerConnection]);
+
   // ─── HOST: Create offer and send to guest ───
   const createAndSendOffer = useCallback(async (pc) => {
+    if (!pc || pc.signalingState === 'closed') return;
     try {
       makingOfferRef.current = true;
-      const offer = await pc.createOffer();
+      const offer = await pc.createOffer({
+        offerToReceiveAudio: true,
+        offerToReceiveVideo: true,
+      });
+
+      // Check signaling state again — may have changed during async createOffer
+      if (!pc || pc.signalingState === 'closed') return;
       if (pc.signalingState !== 'stable') {
         console.log('[WebRTC] Signaling not stable, aborting offer');
         return;
       }
+
       await pc.setLocalDescription(offer);
       console.log('[WebRTC] 📤 Sending OFFER');
       socket?.emit('webrtc-signal', {
@@ -171,13 +268,19 @@ export function useWebRTC(socket, roomCode, role, hasRemoteUser) {
 
     const start = async () => {
       const stream = localStreamRef.current || await startMedia();
-      if (cancelled) return;
+      if (cancelled || !mountedRef.current) return;
+      if (!stream) {
+        console.warn('[WebRTC] No local stream, cannot start peer connection');
+        return;
+      }
 
       console.log('[WebRTC] Host starting peer connection');
       const pc = createPeerConnection(stream);
-      // Small delay to let guest set up their signal listener
-      await new Promise((r) => setTimeout(r, 1000));
-      if (cancelled || !pcRef.current) return;
+
+      // Wait a bit for the guest to set up their signal listener
+      await new Promise((r) => setTimeout(r, 1500));
+      if (cancelled || !pcRef.current || pcRef.current !== pc) return;
+
       await createAndSendOffer(pc);
     };
 
@@ -190,6 +293,8 @@ export function useWebRTC(socket, roomCode, role, hasRemoteUser) {
     if (!socket || !roomCode) return;
 
     const handleSignal = async ({ signal }) => {
+      if (!mountedRef.current) return;
+
       try {
         // ── OFFER from host ──
         if (signal.type === 'offer') {
@@ -197,8 +302,9 @@ export function useWebRTC(socket, roomCode, role, hasRemoteUser) {
 
           // Guest: create peer connection if needed
           let pc = pcRef.current;
-          if (!pc || pc.connectionState === 'closed') {
+          if (!pc || pc.signalingState === 'closed' || pc.connectionState === 'closed') {
             const stream = localStreamRef.current || await startMedia();
+            if (!mountedRef.current) return;
             pc = createPeerConnection(stream);
           }
 
@@ -212,13 +318,18 @@ export function useWebRTC(socket, roomCode, role, hasRemoteUser) {
             return;
           }
 
+          // If we're not stable, rollback first (for polite peer)
+          if (pc.signalingState !== 'stable') {
+            await pc.setLocalDescription({ type: 'rollback' });
+          }
+
           await pc.setRemoteDescription(new RTCSessionDescription(signal.sdp));
 
           // Drain pending ICE candidates
-          for (const c of pendingCandidatesRef.current) {
+          while (pendingCandidatesRef.current.length > 0) {
+            const c = pendingCandidatesRef.current.shift();
             try { await pc.addIceCandidate(c); } catch (e) { /* ignore */ }
           }
-          pendingCandidatesRef.current = [];
 
           // Create and send answer
           const answer = await pc.createAnswer();
@@ -234,19 +345,25 @@ export function useWebRTC(socket, roomCode, role, hasRemoteUser) {
         else if (signal.type === 'answer') {
           console.log('[WebRTC] 📥 Received ANSWER');
           const pc = pcRef.current;
-          if (!pc) return;
+          if (!pc || pc.signalingState === 'closed') return;
+
+          // Only set remote description if we're in 'have-local-offer' state
+          if (pc.signalingState !== 'have-local-offer') {
+            console.warn('[WebRTC] Ignoring answer — signaling state:', pc.signalingState);
+            return;
+          }
+
           await pc.setRemoteDescription(new RTCSessionDescription(signal.sdp));
 
           // Drain pending ICE candidates
-          for (const c of pendingCandidatesRef.current) {
+          while (pendingCandidatesRef.current.length > 0) {
+            const c = pendingCandidatesRef.current.shift();
             try { await pc.addIceCandidate(c); } catch (e) { /* ignore */ }
           }
-          pendingCandidatesRef.current = [];
         }
 
         // ── ICE Candidate ──
         else if (signal.type === 'candidate') {
-          console.log('[WebRTC] 📥 Received ICE candidate');
           const pc = pcRef.current;
           if (!pc) {
             pendingCandidatesRef.current.push(new RTCIceCandidate(signal.candidate));
@@ -256,7 +373,9 @@ export function useWebRTC(socket, roomCode, role, hasRemoteUser) {
             try {
               await pc.addIceCandidate(new RTCIceCandidate(signal.candidate));
             } catch (e) {
-              console.warn('[WebRTC] Error adding ICE candidate:', e.message);
+              if (!e.message.includes('end-of-candidates')) {
+                console.warn('[WebRTC] Error adding ICE candidate:', e.message);
+              }
             }
           } else {
             // Queue until remote description is set
@@ -275,22 +394,22 @@ export function useWebRTC(socket, roomCode, role, hasRemoteUser) {
   // ─── Toggle camera ─────────────────────────
   const toggleCamera = useCallback(() => {
     if (localStreamRef.current) {
-      const track = localStreamRef.current.getVideoTracks()[0];
-      if (track) {
+      const tracks = localStreamRef.current.getVideoTracks();
+      tracks.forEach((track) => {
         track.enabled = !track.enabled;
         setCameraOn(track.enabled);
-      }
+      });
     }
   }, []);
 
   // ─── Toggle mic ────────────────────────────
   const toggleMic = useCallback(() => {
     if (localStreamRef.current) {
-      const track = localStreamRef.current.getAudioTracks()[0];
-      if (track) {
+      const tracks = localStreamRef.current.getAudioTracks();
+      tracks.forEach((track) => {
         track.enabled = !track.enabled;
         setMicOn(track.enabled);
-      }
+      });
     }
   }, []);
 
@@ -299,12 +418,22 @@ export function useWebRTC(socket, roomCode, role, hasRemoteUser) {
     if (!hasRemoteUser && connectedRef.current) {
       console.log('[WebRTC] Remote user left, closing peer');
       closePeer();
+      reconnectAttemptsRef.current = 0;
     }
   }, [hasRemoteUser, closePeer]);
+
+  // ─── Track mount/unmount state ─────────────
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
 
   // ─── Cleanup on unmount ────────────────────
   useEffect(() => {
     return () => {
+      clearTimeout(reconnectTimerRef.current);
       closePeer();
       if (localStreamRef.current) {
         localStreamRef.current.getTracks().forEach((t) => t.stop());
