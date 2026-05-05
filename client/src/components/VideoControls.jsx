@@ -2,7 +2,7 @@
  * VideoControls.jsx — Custom video player controls overlay
  * Includes play/pause, volume, speed, fullscreen, PiP, and time display.
  */
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import SeekBar from './SeekBar';
 import { formatTime } from '../utils/helpers';
 import { PLAYBACK_SPEEDS, CONTROLS_TIMEOUT } from '../utils/constants';
@@ -24,7 +24,8 @@ export default function VideoControls({
   const [visible, setVisible] = useState(true);
   const [showSpeed, setShowSpeed] = useState(false);
   const [muted, setMuted] = useState(false);
-  const hideTimerRef = React.useRef(null);
+  const hideTimerRef = useRef(null);
+  const subtitleInputRef = useRef(null);
 
   // Auto-hide controls
   const showControls = useCallback(() => {
@@ -77,6 +78,60 @@ export default function VideoControls({
         detail: { message: 'Picture-in-Picture is not supported in your browser.', type: 'warning' }
       }));
     }
+  };
+
+  const handleAudioSwitch = () => {
+    const video = videoRef.current;
+    if (!video) return;
+    if (video.audioTracks && video.audioTracks.length > 1) {
+      let enabledIndex = 0;
+      for (let i = 0; i < video.audioTracks.length; i++) {
+        if (video.audioTracks[i].enabled) {
+          enabledIndex = i;
+          video.audioTracks[i].enabled = false;
+        }
+      }
+      const nextIndex = (enabledIndex + 1) % video.audioTracks.length;
+      video.audioTracks[nextIndex].enabled = true;
+      window.dispatchEvent(new CustomEvent('sync-toast', {
+        detail: { message: `Switched to Audio Track ${nextIndex + 1}` }
+      }));
+    } else {
+      window.dispatchEvent(new CustomEvent('sync-toast', {
+        detail: { message: 'Your browser cannot extract multiple languages from a local MKV/MP4 file. Try using an MP4 with a single audio track.', type: 'warning', timeout: 5000 }
+      }));
+    }
+  };
+
+  const handleSubtitleUpload = (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    const video = videoRef.current;
+    if (!video) return;
+    
+    const trackUrl = URL.createObjectURL(file);
+    const track = document.createElement('track');
+    track.kind = 'subtitles';
+    track.label = file.name;
+    track.srclang = 'en';
+    track.src = trackUrl;
+    track.default = true;
+    
+    // Remove existing dynamic tracks
+    const existingTracks = video.querySelectorAll('track');
+    existingTracks.forEach(t => video.removeChild(t));
+    
+    video.appendChild(track);
+    
+    // Force mode to showing
+    if (video.textTracks && video.textTracks.length > 0) {
+      video.textTracks[video.textTracks.length - 1].mode = 'showing';
+    }
+    
+    window.dispatchEvent(new CustomEvent('sync-toast', {
+      detail: { message: `Loaded subtitles: ${file.name}` }
+    }));
+    e.target.value = ''; // reset
   };
 
   return (
@@ -216,6 +271,23 @@ export default function VideoControls({
 
         {/* Right Controls */}
         <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+          {/* Language / Audio Switch */}
+          <button className="control-btn" onClick={handleAudioSwitch} data-tooltip="Switch Language">
+            🗣️
+          </button>
+
+          {/* Subtitles (CC) */}
+          <button className="control-btn" onClick={() => subtitleInputRef.current?.click()} data-tooltip="Load Subtitles (.srt)">
+            💬
+          </button>
+          <input 
+            type="file" 
+            accept=".srt,.vtt" 
+            ref={subtitleInputRef} 
+            style={{ display: 'none' }} 
+            onChange={handleSubtitleUpload} 
+          />
+
           {/* Speed Selector */}
           <div className="speed-selector">
             <button
