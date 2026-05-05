@@ -66,11 +66,16 @@ export default function VideoControls({
     try {
       if (document.pictureInPictureElement) {
         await document.exitPictureInPicture();
+      } else if (videoRef.current?.requestPictureInPicture) {
+        await videoRef.current.requestPictureInPicture();
       } else {
-        await videoRef.current?.requestPictureInPicture();
+        throw new Error('Not supported');
       }
     } catch (err) {
       console.warn('PiP not supported:', err);
+      window.dispatchEvent(new CustomEvent('sync-toast', {
+        detail: { message: 'Picture-in-Picture is not supported in your browser.', type: 'warning' }
+      }));
     }
   };
 
@@ -80,6 +85,64 @@ export default function VideoControls({
       onMouseMove={showControls}
       onMouseEnter={showControls}
     >
+      <style>{`
+        .control-btn {
+          position: relative;
+        }
+        .control-btn::after {
+          content: attr(data-tooltip);
+          position: absolute;
+          bottom: calc(100% + 8px);
+          left: 50%;
+          transform: translateX(-50%) scale(0.95);
+          background: rgba(13,13,26,0.85);
+          backdrop-filter: blur(20px);
+          -webkit-backdrop-filter: blur(20px);
+          border: 1px solid rgba(255,255,255,0.06);
+          padding: 4px 8px;
+          border-radius: 8px;
+          font-size: 11px;
+          color: white;
+          opacity: 0;
+          pointer-events: none;
+          transition: all 0.2s cubic-bezier(0.34, 1.56, 0.64, 1);
+          white-space: nowrap;
+          z-index: 100;
+        }
+        .control-btn:hover::after {
+          opacity: 1;
+          transform: translateX(-50%) scale(1);
+          transition-delay: 400ms;
+        }
+        .speed-btn {
+          position: relative;
+        }
+        .speed-btn::after {
+          content: attr(data-tooltip);
+          position: absolute;
+          bottom: calc(100% + 8px);
+          left: 50%;
+          transform: translateX(-50%) scale(0.95);
+          background: rgba(13,13,26,0.85);
+          backdrop-filter: blur(20px);
+          border: 1px solid rgba(255,255,255,0.06);
+          padding: 4px 8px;
+          border-radius: 8px;
+          font-size: 11px;
+          color: white;
+          opacity: 0;
+          pointer-events: none;
+          transition: all 0.2s cubic-bezier(0.34, 1.56, 0.64, 1);
+          white-space: nowrap;
+          z-index: 100;
+        }
+        .speed-btn:hover::after {
+          opacity: 1;
+          transform: translateX(-50%) scale(1);
+          transition-delay: 400ms;
+        }
+      `}</style>
+
       {/* Video Title */}
       {videoTitle && (
         <div style={{
@@ -117,12 +180,12 @@ export default function VideoControls({
         {/* Left Controls */}
         <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
           {/* Play/Pause */}
-          <button className="control-btn" onClick={onPlayPause} id="play-pause-btn">
+          <button className="control-btn" onClick={onPlayPause} id="play-pause-btn" data-tooltip="Play / Pause (Space)">
             {playing ? '⏸' : '▶️'}
           </button>
 
           {/* Volume */}
-          <button className="control-btn" onClick={handleMuteToggle}>
+          <button className="control-btn" onClick={handleMuteToggle} data-tooltip="Mute (M)">
             {muted || volume === 0 ? '🔇' : volume < 0.5 ? '🔉' : '🔊'}
           </button>
           <input
@@ -158,6 +221,7 @@ export default function VideoControls({
             <button
               className="speed-btn"
               onClick={() => setShowSpeed(!showSpeed)}
+              data-tooltip="Playback Speed"
             >
               {speed}x
             </button>
@@ -177,12 +241,12 @@ export default function VideoControls({
           </div>
 
           {/* PiP */}
-          <button className="control-btn" onClick={handlePiP} title="Picture-in-Picture">
+          <button className="control-btn" onClick={handlePiP} data-tooltip="Picture-in-Picture">
             📐
           </button>
 
           {/* Fullscreen */}
-          <button className="control-btn" onClick={onFullscreen} id="fullscreen-btn" title="Fullscreen (F)">
+          <button className="control-btn" onClick={onFullscreen} id="fullscreen-btn" data-tooltip="Fullscreen (F)">
             ⛶
           </button>
         </div>

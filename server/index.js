@@ -232,11 +232,36 @@ io.on('connection', (socket) => {
   /**
    * Emoji reaction
    */
-  socket.on('emoji-reaction', ({ roomCode, emoji, userName }) => {
-    socket.to(roomCode).emit('emoji-reaction', {
+  socket.on('reaction', ({ roomCode, emoji, userName }) => {
+    // Send to everyone in the room including sender
+    io.to(roomCode).emit('reaction', {
       emoji,
       userName,
       id: `${Date.now()}-${Math.random()}`,
+    });
+  });
+
+  /**
+   * Funny Sound
+   */
+  socket.on('funny-sound', ({ roomCode, soundType, userName }) => {
+    // Broadcast to others in the room
+    socket.to(roomCode).emit('funny-sound', {
+      soundType,
+      userName,
+      timestamp: Date.now(),
+    });
+  });
+
+  /**
+   * Mood Change
+   */
+  socket.on('mood-change', ({ roomCode, mood, userName }) => {
+    // Broadcast to everyone in the room
+    io.to(roomCode).emit('mood-change', {
+      mood,
+      userName,
+      timestamp: Date.now(),
     });
   });
 

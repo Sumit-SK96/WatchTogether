@@ -868,3 +868,76 @@ html, body, #root {
   0% { transform: translateY(-20px); opacity: 0; }
   100% { transform: translateY(0); opacity: 1; }
 }
+
+/* ═══════════════════════════════════════════════
+   Mood Themes
+   ═══════════════════════════════════════════════ */
+
+.mood-horror {
+  --primary: #8B0000;
+  --accent: #8B0000;
+  --glass-border: rgba(139, 0, 0, 0.2);
+}
+
+.mood-comedy {
+  --primary: #F59E0B;
+  --accent: #F59E0B;
+  --glass-border: rgba(245, 158, 11, 0.2);
+}
+
+.mood-romance {
+  --primary: #EC4899;
+  --accent: #EC4899;
+  --glass-border: rgba(236, 72, 153, 0.2);
+}
+
+.mood-action {
+  --primary: #06B6D4;
+  --accent: #06B6D4;
+  --glass-border: rgba(6, 182, 212, 0.2);
+}
+
+.mood-thriller {
+  --primary: #6D28D9;
+  --accent: #6D28D9;
+  --glass-border: rgba(109, 40, 217, 0.2);
+}
+
+.vignette-horror {
+  background: radial-gradient(circle at center, transparent 40%, rgba(100,0,0,0.45) 100%);
+  animation: flickerRed 4s infinite alternate;
+}
+
+@keyframes flickerRed {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.9; }
+}
+
+.vignette-comedy {
+  background: radial-gradient(circle at center, transparent 50%, rgba(255,200,0,0.08) 100%);
+}
+
+.vignette-romance {
+  background: radial-gradient(circle at center, transparent 50%, rgba(255,100,150,0.12) 100%);
+}
+
+.vignette-action {
+  background: radial-gradient(circle at center, transparent 50%, rgba(0,200,255,0.1) 100%);
+}
+
+.vignette-thriller {
+  background: radial-gradient(circle at center, transparent 50%, rgba(80,0,120,0.3) 100%);
+}
+
+/* Base Shadow & Glass Override */
+.shadow-premium {
+  box-shadow: 0 8px 32px rgba(0,0,0,0.4);
+}
+
+.glass-panel {
+  background: rgba(13,13,26,0.7);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  border: 1px solid rgba(255,255,255,0.06);
+  border-radius: 16px;
+}

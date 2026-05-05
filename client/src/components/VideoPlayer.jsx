@@ -15,6 +15,7 @@ import { CONTROLS_TIMEOUT } from '../utils/constants';
 
 const VideoPlayer = forwardRef(function VideoPlayer({
   videoFile,
+  mood = 'default',
   onPlay,
   onPause,
   onSeek,
@@ -109,10 +110,32 @@ const VideoPlayer = forwardRef(function VideoPlayer({
   }, [onSpeedChange]);
 
   const handleFullscreen = useCallback(() => {
-    if (document.fullscreenElement) {
-      document.exitFullscreen();
+    const el = containerRef.current;
+    const video = videoRef.current;
+    if (!el && !video) return;
+
+    if (document.fullscreenElement || document.webkitFullscreenElement || document.mozFullScreenElement) {
+      if (document.exitFullscreen) document.exitFullscreen();
+      else if (document.webkitExitFullscreen) document.webkitExitFullscreen();
+      else if (document.mozCancelFullScreen) document.mozCancelFullScreen();
     } else {
-      containerRef.current?.requestFullscreen();
+      const target = el || video;
+      if (target.requestFullscreen) {
+        target.requestFullscreen().catch(err => {
+          console.warn('Fullscreen request failed:', err);
+          window.dispatchEvent(new CustomEvent('sync-toast', {
+            detail: { message: 'Fullscreen not supported by your browser.', type: 'warning' }
+          }));
+        });
+      }
+      else if (target.webkitRequestFullscreen) target.webkitRequestFullscreen();
+      else if (target.mozRequestFullScreen) target.mozRequestFullScreen();
+      else if (video && video.webkitEnterFullscreen) video.webkitEnterFullscreen(); // iOS Safari
+      else {
+        window.dispatchEvent(new CustomEvent('sync-toast', {
+          detail: { message: 'Fullscreen not supported by your browser.', type: 'warning' }
+        }));
+      }
     }
   }, []);
 
@@ -211,6 +234,16 @@ const VideoPlayer = forwardRef(function VideoPlayer({
       <video
         ref={videoRef}
         src={videoSrc}
+        style={{
+          width: '100%',
+          height: '100%',
+          filter: mood === 'comedy' ? 'brightness(1.05)' :
+                  mood === 'romance' ? 'sepia(0.08) saturate(1.1)' :
+                  mood === 'action' ? 'contrast(1.05) saturate(1.15)' :
+                  mood === 'thriller' ? 'saturate(0.85) contrast(1.1)' : 'none',
+          transition: 'filter 0.8s ease',
+          outline: 'none',
+        }}
         onLoadedMetadata={() => {
           setDuration(videoRef.current?.duration || 0);
           // Dispatch event for late joiner auto-sync
@@ -220,6 +253,20 @@ const VideoPlayer = forwardRef(function VideoPlayer({
         onPause={() => setPlaying(false)}
         playsInline
       />
+
+      {mood !== 'default' && (
+        <div 
+          className={`vignette-${mood}`}
+          style={{
+            position: 'absolute',
+            inset: 0,
+            pointerEvents: 'none',
+            zIndex: 5,
+            transition: 'opacity 0.8s ease',
+            opacity: 1
+          }}
+        />
+      )}
 
       <VideoControls
         videoRef={videoRef}

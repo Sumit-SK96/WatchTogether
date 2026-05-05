@@ -16,8 +16,39 @@ import { SUPPORTED_FORMATS } from '../utils/constants';
 export default function WatchRoom({ socket, roomCode, role, roomData, userName }) {
   const [videoFile, setVideoFile] = useState(null);
   const [isDragging, setIsDragging] = useState(false);
+  const [mood, setMood] = useState('default');
+  const [showMoodMenu, setShowMoodMenu] = useState(false);
   const videoRef = useRef(null);
   const fileInputRef = useRef(null);
+
+  const MOODS = [
+    { id: 'default', icon: '✨', label: 'Default' },
+    { id: 'horror', icon: '🎃', label: 'Horror' },
+    { id: 'comedy', icon: '😂', label: 'Comedy' },
+    { id: 'romance', icon: '💕', label: 'Romance' },
+    { id: 'action', icon: '⚡', label: 'Action' },
+    { id: 'thriller', icon: '🧠', label: 'Thriller' }
+  ];
+
+  // Listen for remote mood changes
+  useEffect(() => {
+    if (!socket) return;
+    const handler = ({ mood: newMood, userName: senderName }) => {
+      setMood(newMood);
+      const moodInfo = MOODS.find(m => m.id === newMood);
+      window.dispatchEvent(new CustomEvent('sync-toast', {
+        detail: { message: `${senderName} set the mood to ${moodInfo?.label} ${moodInfo?.icon}`, timeout: 2500 }
+      }));
+    };
+    socket.on('mood-change', handler);
+    return () => socket.off('mood-change', handler);
+  }, [socket]);
+
+  const changeMood = (newMood) => {
+    setMood(newMood);
+    setShowMoodMenu(false);
+    socket?.emit('mood-change', { roomCode, mood: newMood, userName });
+  };
 
   const remoteName = role === 'host'
     ? roomData?.guest?.name
@@ -95,12 +126,13 @@ export default function WatchRoom({ socket, roomCode, role, roomData, userName }
   };
 
   return (
-    <div style={{
+    <div className={`mood-${mood}`} style={{
       width: '100vw',
       height: '100vh',
       background: 'var(--bg)',
       position: 'relative',
       overflow: 'hidden',
+      transition: 'all 0.8s ease'
     }}>
       <Toast />
 
@@ -267,6 +299,7 @@ export default function WatchRoom({ socket, roomCode, role, roomData, userName }
           <VideoPlayer
             ref={videoRef}
             videoFile={videoFile}
+            mood={mood}
             onPlay={(t) => emitPlay(t)}
             onPause={(t) => emitPause(t)}
             onSeek={(t) => emitSeek(t)}
@@ -291,6 +324,85 @@ export default function WatchRoom({ socket, roomCode, role, roomData, userName }
             alignItems: 'center',
             gap: '8px',
           }}>
+            {/* Mood Selector */}
+            <div style={{ position: 'relative' }}>
+              <button 
+                className="glass"
+                onClick={() => setShowMoodMenu(!showMoodMenu)}
+                style={{
+                  height: '32px',
+                  padding: '0 12px',
+                  borderRadius: '16px',
+                  border: 'none',
+                  color: 'white',
+                  cursor: 'pointer',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '6px',
+                  fontSize: '0.85rem',
+                  fontWeight: 500,
+                  transition: 'background 0.2s ease'
+                }}
+              >
+                {MOODS.find(m => m.id === mood)?.icon} Mood
+              </button>
+              
+              <motion.div 
+                initial={false}
+                animate={{ opacity: showMoodMenu ? 1 : 0, scale: showMoodMenu ? 1 : 0.95 }}
+                style={{
+                  position: 'absolute',
+                  top: '100%',
+                  right: 0,
+                  marginTop: '8px',
+                  width: '280px',
+                  background: 'rgba(13,13,26,0.85)',
+                  backdropFilter: 'blur(30px)',
+                  border: '1px solid rgba(255,255,255,0.06)',
+                  borderRadius: '16px',
+                  padding: '12px',
+                  display: 'grid',
+                  gridTemplateColumns: 'repeat(3, 1fr)',
+                  gap: '8px',
+                  pointerEvents: showMoodMenu ? 'auto' : 'none',
+                  transformOrigin: 'top right'
+                }}
+              >
+                {MOODS.map(m => (
+                  <button
+                    key={m.id}
+                    onClick={() => changeMood(m.id)}
+                    style={{
+                      height: '60px',
+                      display: 'flex',
+                      flexDirection: 'column',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      background: mood === m.id ? 'rgba(255,255,255,0.08)' : 'transparent',
+                      border: `1px solid ${mood === m.id ? 'var(--primary)' : 'rgba(255,255,255,0.04)'}`,
+                      borderRadius: '12px',
+                      color: 'white',
+                      cursor: 'pointer',
+                      gap: '4px',
+                      transition: 'all 0.2s var(--spring-ease)',
+                      boxShadow: mood === m.id ? '0 0 12px var(--glass-border)' : 'none'
+                    }}
+                    onMouseEnter={e => {
+                      e.currentTarget.style.transform = 'scale(1.05)';
+                      e.currentTarget.style.borderColor = 'var(--primary)';
+                    }}
+                    onMouseLeave={e => {
+                      e.currentTarget.style.transform = 'scale(1)';
+                      e.currentTarget.style.borderColor = mood === m.id ? 'var(--primary)' : 'rgba(255,255,255,0.04)';
+                    }}
+                  >
+                    <span style={{ fontSize: '1.5rem' }}>{m.icon}</span>
+                    <span style={{ fontSize: '0.65rem' }}>{m.label}</span>
+                  </button>
+                ))}
+              </motion.div>
+            </div>
+
             <div className="glass" style={{
               padding: '6px 14px',
               borderRadius: '10px',
