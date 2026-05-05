@@ -10,12 +10,17 @@
  */
 import React, { useRef, useState, useEffect, useCallback, forwardRef, useImperativeHandle } from 'react';
 import VideoControls from './VideoControls';
+import FullscreenChat from './FullscreenChat';
 import { getVideoTitle } from '../utils/helpers';
 import { CONTROLS_TIMEOUT } from '../utils/constants';
 
 const VideoPlayer = forwardRef(function VideoPlayer({
   videoFile,
   mood = 'default',
+  socket,
+  roomCode,
+  userName,
+  chatMessages,
   onPlay,
   onPause,
   onSeek,
@@ -31,6 +36,7 @@ const VideoPlayer = forwardRef(function VideoPlayer({
   const [speed, setSpeed] = useState(1);
   const [videoSrc, setVideoSrc] = useState(null);
   const [cursorHidden, setCursorHidden] = useState(false);
+  const [isFullscreen, setIsFullscreen] = useState(false);
   const cursorTimerRef = useRef(null);
   const animFrameRef = useRef(null);
 
@@ -56,6 +62,22 @@ const VideoPlayer = forwardRef(function VideoPlayer({
     };
     animFrameRef.current = requestAnimationFrame(update);
     return () => cancelAnimationFrame(animFrameRef.current);
+  }, []);
+
+  // Track Fullscreen state
+  useEffect(() => {
+    const handleFullscreenChange = () => {
+      const isFull = !!(document.fullscreenElement || document.webkitFullscreenElement || document.mozFullScreenElement);
+      setIsFullscreen(isFull);
+    };
+    document.addEventListener('fullscreenchange', handleFullscreenChange);
+    document.addEventListener('webkitfullscreenchange', handleFullscreenChange);
+    document.addEventListener('mozfullscreenchange', handleFullscreenChange);
+    return () => {
+      document.removeEventListener('fullscreenchange', handleFullscreenChange);
+      document.removeEventListener('webkitfullscreenchange', handleFullscreenChange);
+      document.removeEventListener('mozfullscreenchange', handleFullscreenChange);
+    };
   }, []);
 
   // Cursor auto-hide
@@ -282,6 +304,16 @@ const VideoPlayer = forwardRef(function VideoPlayer({
         onSpeedChange={handleSpeedChange}
         onFullscreen={handleFullscreen}
       />
+
+      {isFullscreen && (
+        <FullscreenChat 
+          socket={socket} 
+          roomCode={roomCode} 
+          userName={userName} 
+          chatMessages={chatMessages}
+          controlsVisible={!cursorHidden}
+        />
+      )}
     </div>
   );
 });

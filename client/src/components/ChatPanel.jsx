@@ -15,9 +15,8 @@ const FUNNY_SOUNDS = [
   { type: 'meme', emoji: '😂', label: 'Meme' },
 ];
 
-export default function ChatPanel({ socket, roomCode, userName }) {
+export default function ChatPanel({ socket, roomCode, userName, messages, setMessages }) {
   const [open, setOpen] = useState(false);
-  const [messages, setMessages] = useState([]);
   const [input, setInput] = useState('');
   const [unreadCount, setUnreadCount] = useState(0);
   const [pulseBadge, setPulseBadge] = useState(false);

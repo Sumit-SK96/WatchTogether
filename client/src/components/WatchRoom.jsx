@@ -18,6 +18,7 @@ export default function WatchRoom({ socket, roomCode, role, roomData, userName }
   const [isDragging, setIsDragging] = useState(false);
   const [mood, setMood] = useState('default');
   const [showMoodMenu, setShowMoodMenu] = useState(false);
+  const [chatMessages, setChatMessages] = useState([]);
   const videoRef = useRef(null);
   const fileInputRef = useRef(null);
 
@@ -300,6 +301,10 @@ export default function WatchRoom({ socket, roomCode, role, roomData, userName }
             ref={videoRef}
             videoFile={videoFile}
             mood={mood}
+            socket={socket}
+            roomCode={roomCode}
+            userName={userName}
+            chatMessages={chatMessages}
             onPlay={(t) => emitPlay(t)}
             onPause={(t) => emitPause(t)}
             onSeek={(t) => emitSeek(t)}
@@ -309,7 +314,13 @@ export default function WatchRoom({ socket, roomCode, role, roomData, userName }
 
 
           {/* Chat */}
-          <ChatPanel socket={socket} roomCode={roomCode} userName={userName} />
+          <ChatPanel 
+            socket={socket} 
+            roomCode={roomCode} 
+            userName={userName} 
+            messages={chatMessages}
+            setMessages={setChatMessages}
+          />
 
           {/* Emoji Reactions */}
           <EmojiReactions socket={socket} roomCode={roomCode} userName={userName} />
