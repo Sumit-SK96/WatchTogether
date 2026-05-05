@@ -17,21 +17,14 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
 
 const ICE_SERVERS = [
+  // Google's public STUN servers
   { urls: 'stun:stun.l.google.com:19302' },
   { urls: 'stun:stun1.l.google.com:19302' },
   { urls: 'stun:stun2.l.google.com:19302' },
   { urls: 'stun:stun3.l.google.com:19302' },
-  // Free TURN relay for NAT traversal
-  {
-    urls: 'turn:openrelay.metered.ca:443',
-    username: 'openrelayproject',
-    credential: 'openrelayproject',
-  },
-  {
-    urls: 'turn:openrelay.metered.ca:443?transport=tcp',
-    username: 'openrelayproject',
-    credential: 'openrelayproject',
-  },
+  { urls: 'stun:stun4.l.google.com:19302' },
+  // Cloudflare's public STUN
+  { urls: 'stun:stun.cloudflare.com:3478' },
 ];
 
 // How long to wait before retrying a failed connection
